@@ -1,0 +1,49 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "crawl: commits (all)",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"tools\\run_crawl_commits.py"
+			],
+			"problemMatcher": [],
+			"isBackground": false
+		},
+		{
+			"label": "crawl: commits (no merges, first parent)",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"tools\\run_crawl_commits.py",
+				"--no-merges",
+				"--first-parent"
+			],
+			"problemMatcher": [],
+			"isBackground": false
+		},
+		{
+			"label": "crawl: bug issues (since 2020-01-01)",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"tools\\run_collect_bugs.py",
+				"--since",
+				"2020-01-01"
+			],
+			"problemMatcher": [],
+			"isBackground": false
+		},
+		{
+			"label": "report: generate charts+md",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"main.py"
+			],
+			"problemMatcher": [],
+			"isBackground": false
+		}
+	]
+}

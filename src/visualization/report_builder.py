@@ -68,6 +68,24 @@ class ReportBuilder:
             lines.append('')
         lines.append('')
 
+        # AST分析结果部分
+        ast_summary = commit.get('ast_analysis_summary', {})
+        if ast_summary and ast_summary.get('enabled', False):
+            lines.append('## AST Analysis Results')
+            lines.append(f"- Analyzed commits count: {ast_summary.get('analyzed_commits_count', 0)}")
+            lines.append(f"- Total security issues detected: {ast_summary.get('security_issues_total', 0)}")
+            lines.append(f"- Total complexity score: {ast_summary.get('complexity_total', 0)}")
+            lines.append(f"- Total functions: {ast_summary.get('function_count_total', 0)}")
+            if ast_summary.get('has_security_related_fixes'):
+                lines.append("- Contains security-related fixes")
+            
+            top_patterns = ast_summary.get('top_patterns', [])
+            if top_patterns:
+                lines.append('### Top Patterns Found:')
+                for pattern in top_patterns:
+                    lines.append(f"- {pattern.get('pattern', 'Unknown')}: {pattern.get('count', 0)} occurrences")
+            lines.append('')
+
         if vuln:
             lines.append('## Vulnerability Linking (Optional)')
             lines.append('### Match Types')

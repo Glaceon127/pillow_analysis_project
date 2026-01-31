@@ -7,13 +7,53 @@
 from __future__ import annotations
 
 import os
+import sys
+import logging
 from typing import Any, Dict, List
 
 import matplotlib.pyplot as plt
 
 # ===================== 新增：全局中文+风格配置 =====================
 # 1. 解决中文显示乱码/方框问题
-plt.rcParams["font.family"] = ["SimHei", "Microsoft YaHei", "PingFang SC"]  # 适配Windows/macOS
+# 自动检测系统并选择更合适的字体列表；同时静默 findfont 噪音警告。
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
+
+def _configure_font_family_for_os() -> None:
+    platform = sys.platform.lower()
+    if platform.startswith('darwin'):
+        # macOS
+        families = [
+            'PingFang SC',
+            'Hiragino Sans GB',
+            'Heiti SC',
+            'STHeiti',
+            'Arial Unicode MS',
+            'Noto Sans CJK SC',
+            'DejaVu Sans',
+        ]
+    elif platform.startswith('win'):
+        # Windows
+        families = [
+            'Microsoft YaHei',
+            'SimHei',
+            'Arial Unicode MS',
+            'Noto Sans CJK SC',
+            'DejaVu Sans',
+        ]
+    else:
+        # Linux / others
+        families = [
+            'Noto Sans CJK SC',
+            'WenQuanYi Micro Hei',
+            'WenQuanYi Zen Hei',
+            'Arial Unicode MS',
+            'DejaVu Sans',
+        ]
+
+    plt.rcParams['font.family'] = families
+
+
+_configure_font_family_for_os()
 plt.rcParams["axes.unicode_minus"] = False  # 负号正常显示
 
 # 2. 统一所有图表风格（视觉一致性）
@@ -48,11 +88,9 @@ class PlotGenerator:
         print("commit数据：", analysis_results.get('commit'))
         print("issues数据：", analysis_results.get('issues'))
         print("vuln数据：", analysis_results.get('vulnerability'))  # 重点看这行
-
-
-
         def _thin_month_ticks(month_labels: List[str], max_ticks: int = None):
-            int = 24
+            if max_ticks is None:
+                max_ticks = 24
             """Set thinned x ticks for dense month labels.
             Returns: (xs, tick_positions, tick_labels)
             """
@@ -255,7 +293,7 @@ class PlotGenerator:
             charts['matched_vs_unmatched'] = path
 
         # 3) Match types distribution
-        mt = vuln.get('match_types_all') or []
+        mt = vuln.get('match_types_top') or []
         if mt:
             type_cn_map = {
                 'commit_reference': '提交引用',
@@ -275,11 +313,10 @@ class PlotGenerator:
             plt.figure(figsize=(8, 5))
             bars = plt.bar(labels, values, color=bar_colors[:len(values)], width=0.6, alpha=0.85, edgecolor='black', linewidth=1.2)
             plt.xticks(rotation=25, ha='center', fontsize=12)
-            plt.title('CVE漏洞匹配类型分布（全部类型）', fontsize=15, fontweight='bold')
+            plt.title('CVE漏洞匹配类型分布（Top类型）', fontsize=15, fontweight='bold')
             plt.xlabel('匹配类型', fontsize=13)
             plt.ylabel('漏洞数量（个）', fontsize=13)
             plt.grid(axis='y', linestyle='--', alpha=0.5)
-            plt.ylim(0, max(values) * 1.15)
             plt.ylim(0, max(values) * 1.20)  # 上调y轴
             plt.tight_layout()
             for bar, value in zip(bars, values):

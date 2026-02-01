@@ -1,16 +1,198 @@
+"""AST 静态分析（标准库 ast 版）。
+
+核心问题：识别危险模式并统计趋势。
+
+约定：提供统一的 `ASTAnalyzer` 类，供 `CommitAnalyzer` 调用：
+
+- analyze(code: str, file_path: str) -> dict
+  返回包含 patterns_found / security_issues_potential 等字段的结果。
+
+说明：本模块仅做“信号级”静态检测（pattern spotting），不做完整数据流/污点分析。
+"""
+
+from __future__ import annotations
+
 import ast
 import os
-from typing import Dict, List, Tuple, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+
+@dataclass(frozen=True)
+class PatternHit:
+    pattern: str
+    lineno: Optional[int] = None
+
+
+class ASTAnalyzer:
+    """通用 AST 分析器（标准库 ast）：检测危险模式 + 基础结构指标。"""
+
+    def analyze(self, code: str, file_path: str = "") -> Dict[str, Any]:
+        file_path = file_path or ""
+        if not isinstance(code, str) or not code.strip():
+            return {
+                'file_path': file_path,
+                'patterns_found': [],
+                'pattern_hits': [],
+                'security_issues_potential': 0,
+                'complexity_score': 0,
+                'function_count': 0,
+                'class_count': 0,
+                'import_count': 0,
+                'error': 'empty_code',
+            }
+
+        try:
+            tree = ast.parse(code, filename=file_path or '<unknown>')
+        except SyntaxError as e:
+            return {
+                'file_path': file_path,
+                'patterns_found': [],
+                'pattern_hits': [],
+                'security_issues_potential': 0,
+                'complexity_score': 0,
+                'function_count': 0,
+                'class_count': 0,
+                'import_count': 0,
+                'error': f'syntax_error: {e.msg}',
+            }
+        except Exception as e:
+            return {
+                'file_path': file_path,
+                'patterns_found': [],
+                'pattern_hits': [],
+                'security_issues_potential': 0,
+                'complexity_score': 0,
+                'function_count': 0,
+                'class_count': 0,
+                'import_count': 0,
+                'error': f'parse_error: {e}',
+            }
+
+        visitor = _DangerPatternVisitor()
+        visitor.visit(tree)
+
+        hits = visitor.hits
+        patterns_found = [h.pattern for h in hits]
+        return {
+            'file_path': file_path,
+            'patterns_found': patterns_found,
+            'pattern_hits': [{'pattern': h.pattern, 'lineno': h.lineno} for h in hits],
+            'security_issues_potential': int(len(patterns_found)),
+            'complexity_score': int(visitor.complexity_score),
+            'function_count': int(visitor.function_count),
+            'class_count': int(visitor.class_count),
+            'import_count': int(visitor.import_count),
+            'error': None,
+        }
+
+
+class _DangerPatternVisitor(ast.NodeVisitor):
+    """检测危险模式的 AST visitor。"""
+
+    def __init__(self) -> None:
+        self.hits: List[PatternHit] = []
+        self.function_count = 0
+        self.class_count = 0
+        self.import_count = 0
+        self.complexity_score = 0
+
+    def _lineno(self, node: ast.AST) -> Optional[int]:
+        return int(getattr(node, 'lineno', 0)) or None
+
+    def _hit(self, pattern: str, node: ast.AST) -> None:
+        self.hits.append(PatternHit(pattern=pattern, lineno=self._lineno(node)))
+
+    def visit_Import(self, node: ast.Import) -> Any:
+        self.import_count += 1
+        return self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:
+        self.import_count += 1
+        return self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
+        self.function_count += 1
+        # complexity heuristic: each function starts with 1
+        self.complexity_score += 1
+        return self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> Any:
+        self.function_count += 1
+        self.complexity_score += 1
+        return self.generic_visit(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> Any:
+        self.class_count += 1
+        return self.generic_visit(node)
+
+    def visit_If(self, node: ast.If) -> Any:
+        self.complexity_score += 1
+        return self.generic_visit(node)
+
+    def visit_For(self, node: ast.For) -> Any:
+        self.complexity_score += 1
+        return self.generic_visit(node)
+
+    def visit_While(self, node: ast.While) -> Any:
+        self.complexity_score += 1
+        return self.generic_visit(node)
+
+    def visit_Try(self, node: ast.Try) -> Any:
+        # each except/finally increases complexity
+        self.complexity_score += max(1, len(getattr(node, 'handlers', []) or []))
+        return self.generic_visit(node)
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> Any:
+        # a and b and c roughly adds branches
+        values = getattr(node, 'values', []) or []
+        if len(values) >= 2:
+            self.complexity_score += (len(values) - 1)
+        return self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> Any:
+        # 1) eval()/exec()
+        if isinstance(node.func, ast.Name):
+            if node.func.id == 'eval':
+                self._hit('danger_eval', node)
+            elif node.func.id == 'exec':
+                self._hit('danger_exec', node)
+
+        # 2) os.system / os.popen
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            mod = node.func.value.id
+            attr = node.func.attr
+            if mod == 'os' and attr in {'system', 'popen'}:
+                self._hit(f'danger_os_{attr}', node)
+
+            # 3) subprocess.* with shell=True
+            if mod == 'subprocess' and attr in {'run', 'call', 'Popen', 'check_call', 'check_output'}:
+                for kw in node.keywords or []:
+                    if kw.arg == 'shell' and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                        self._hit('danger_subprocess_shell_true', node)
+                        break
+
+            # 4) pickle.load / pickle.loads
+            if mod == 'pickle' and attr in {'load', 'loads'}:
+                self._hit(f'danger_pickle_{attr}', node)
+
+            # 5) yaml.load (potentially unsafe loader)
+            if mod == 'yaml' and attr == 'load':
+                self._hit('danger_yaml_load', node)
+
+        return self.generic_visit(node)
+
 
 class PillowASTAnalyzer:
-    """Pillow 代码库 AST 分析器：提取修复代码的模式/热区特征"""
-    
+    """（可选）Pillow repo 级 AST 分析器：基于 changed_lines 做热区/节点类型。
+
+注意：该类用于行号热区类研究；危险模式统计的主入口应优先使用 ASTAnalyzer.analyze(code,...)
+并通过 git show 获取指定 commit 的源码版本。
+"""
+
     def __init__(self, pillow_repo_path: str):
-        """初始化：传入 Pillow 本地仓库路径"""
         self.repo_path = os.path.abspath(pillow_repo_path)
-        # 缓存：文件路径 -> AST 树（避免重复解析）
         self.ast_cache: Dict[str, ast.AST] = {}
-        # 忽略的文件后缀/路径
         self.ignore_patterns = [".c", ".h", "tests/", "docs/", "vendor/"]
 
     def _is_ignored(self, file_path: str) -> bool:

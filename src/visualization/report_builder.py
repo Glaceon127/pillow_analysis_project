@@ -68,23 +68,31 @@ class ReportBuilder:
             lines.append('')
         lines.append('')
 
-        # AST分析结果部分
+        # AST分析结果部分（危险模式识别 + 趋势统计）
         ast_summary = commit.get('ast_analysis_summary', {})
         if ast_summary and ast_summary.get('enabled', False):
-            lines.append('## AST Analysis Results')
-            lines.append(f"- Analyzed commits count: {ast_summary.get('analyzed_commits_count', 0)}")
-            lines.append(f"- Total security issues detected: {ast_summary.get('security_issues_total', 0)}")
-            lines.append(f"- Total complexity score: {ast_summary.get('complexity_total', 0)}")
-            lines.append(f"- Total functions: {ast_summary.get('function_count_total', 0)}")
-            if ast_summary.get('has_security_related_fixes'):
-                lines.append("- Contains security-related fixes")
-            
+            lines.append('## AST Dangerous Pattern Analysis')
+            if ast_summary.get('message'):
+                lines.append(f"- Note: {ast_summary.get('message')}")
+            lines.append(f"- Local repo: {ast_summary.get('repo_path', '')}")
+            lines.append(f"- Analyzed commits (cap applied): {ast_summary.get('analyzed_commits', 0)}")
+            lines.append(f"- Analyzed python files: {ast_summary.get('analyzed_files', 0)}")
+            lines.append(f"- Commits with patterns: {ast_summary.get('commits_with_patterns', 0)}")
+            lines.append(f"- Total pattern hits: {ast_summary.get('patterns_total', 0)}")
+
             top_patterns = ast_summary.get('top_patterns', [])
             if top_patterns:
-                lines.append('### Top Patterns Found:')
+                lines.append('### Top Dangerous Patterns (overall)')
                 for pattern in top_patterns:
-                    lines.append(f"- {pattern.get('pattern', 'Unknown')}: {pattern.get('count', 0)} occurrences")
+                    lines.append(f"- {pattern.get('pattern', 'Unknown')}: {pattern.get('count', 0)}")
             lines.append('')
+
+            if 'ast_patterns_by_month' in charts:
+                lines.append(f"![ast_patterns_by_month]({rel(charts['ast_patterns_by_month'])})")
+                lines.append('')
+            if 'ast_top_patterns' in charts:
+                lines.append(f"![ast_top_patterns]({rel(charts['ast_top_patterns'])})")
+                lines.append('')
 
         if vuln:
             lines.append('## Vulnerability Linking (Optional)')

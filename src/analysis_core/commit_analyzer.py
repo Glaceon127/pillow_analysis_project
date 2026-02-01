@@ -7,8 +7,11 @@
 from __future__ import annotations
 
 from collections import Counter
+import math
+import os
 import re
-from typing import Any, Dict, List
+import subprocess
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -173,45 +176,284 @@ class CommitAnalyzer:
         }
 
     def _perform_ast_analysis(self, commits: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """执行AST分析，提取代码变更中的模式"""
+        """执行 AST 分析（标准库 ast）：识别危险模式并统计趋势。
+
+        实现要点：
+        - 使用本机 Pillow 仓库（config.settings.PILLOW_REPO_PATH），对 commit 的变更文件执行 `git show <sha>:<path>` 获取源码。
+        - 用 ASTAnalyzer.analyze(code, file_path) 提取危险模式与基础指标。
+        - 聚合到 month 粒度，输出趋势与 top patterns。
+        """
+
         if not ASTAnalyzer:
             return {
                 'enabled': False,
-                'message': 'ASTAnalyzer not available. Install libcst to enable AST analysis.'
+                'message': 'ASTAnalyzer not available.',
             }
 
+        try:
+            from config.settings import PILLOW_REPO_PATH
+        except Exception:
+            PILLOW_REPO_PATH = ''
+
+        repo_path = os.path.abspath(PILLOW_REPO_PATH) if PILLOW_REPO_PATH else ''
+        if not repo_path or not os.path.isdir(repo_path):
+            return {
+                'enabled': False,
+                'message': 'PILLOW_REPO_PATH is not set or does not exist; cannot run git-based AST analysis.',
+            }
+        if not os.path.isdir(os.path.join(repo_path, '.git')):
+            return {
+                'enabled': False,
+                'message': f'PILLOW_REPO_PATH is not a git repository: {repo_path}',
+            }
+
+        max_commits = int(os.getenv('PILLOW_AST_MAX_COMMITS', '300') or '300')
+        max_files_per_commit = int(os.getenv('PILLOW_AST_MAX_FILES_PER_COMMIT', '30') or '30')
+        sample_strategy = (os.getenv('PILLOW_AST_SAMPLE_STRATEGY', 'recent') or 'recent').strip().lower()
+
+        fix_re = re.compile(
+            r"(\bcve-\d{4}-\d+\b|\bsecurity\b|\bfix(?:e[ds])?\b|\bbug(?:s)?\b|\bdefect(?:s)?\b|\bregress(?:ion|ed)?\b|\bcrash(?:es|ed)?\b|\bhot\s*fix\b|\bpatch\b|\bresolve[sd]?\b|\bcloses?\b)",
+            re.IGNORECASE,
+        )
+
+        def _git(args: List[str]) -> Tuple[int, str, str]:
+            try:
+                p = subprocess.run(
+                    ['git', *args],
+                    cwd=repo_path,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    capture_output=True,
+                )
+                return int(p.returncode), p.stdout or '', p.stderr or ''
+            except FileNotFoundError:
+                return 127, '', 'git_not_found'
+
+        def _get_files_for_commit(commit_hash: str) -> List[str]:
+            # Prefer files list from processed JSON; fallback to git show --name-only
+            rc, out, _ = _git(['show', '--name-only', '--pretty=format:', commit_hash])
+            if rc != 0:
+                return []
+            paths = [line.strip() for line in (out.splitlines() if out else []) if line.strip()]
+            return paths
+
+        def _get_file_at_commit(commit_hash: str, path: str) -> Optional[str]:
+            rc, out, _ = _git(['show', f'{commit_hash}:{path}'])
+            if rc != 0:
+                return None
+            return out
+
+        def _is_python_file(path: str) -> bool:
+            p = (path or '').replace('\\', '/')
+            if not p.lower().endswith('.py'):
+                return False
+            # Speed: skip tests/docs/vendor-like paths by default
+            lowered = p.lower()
+            if lowered.startswith('tests/') or lowered.startswith('docs/') or '/tests/' in lowered or '/docs/' in lowered:
+                return False
+            return True
+
         analyzer = ASTAnalyzer()
-        ast_results = []
 
-        # 这里我们只是模拟对提交的代码变更进行AST分析
-        # 在实际应用中，我们需要获取提交的补丁内容
-        for commit in commits[:10]:  # 限制分析前10个提交以避免性能问题
-            subject = commit.get('subject', '')
-            if 'fix' in subject.lower() or 'security' in subject.lower():
-                # 模拟对代码变更进行分析
-                # 在实际实现中，我们会获取提交的diff并分析变更的代码
-                fake_code = "def example_func():\n    return 42"
-                result = analyzer.analyze(fake_code, file_path="example.py")
-                result['commit_hash'] = commit.get('hash', 'unknown')
-                result['commit_subject'] = subject
-                ast_results.append(result)
+        # Preflight: ensure git is available
+        rc, _, err = _git(['--version'])
+        if rc != 0:
+            return {
+                'enabled': False,
+                'message': f'git is not available in PATH ({err}); cannot run git-based AST analysis.',
+            }
 
-        # 聚合AST分析结果
-        security_issues_total = sum(r.get('security_issues_potential', 0) for r in ast_results)
-        complexity_total = sum(r.get('complexity_score', 0) for r in ast_results)
-        function_count_total = sum(r.get('function_count', 0) for r in ast_results)
-        patterns_found = []
-        for r in ast_results:
-            patterns_found.extend(r.get('patterns_found', []))
+        analyzed_commits = 0
+        analyzed_files = 0
+        commits_with_patterns = 0
+        patterns_total = 0
+        complexity_total = 0
+        function_count_total = 0
+        errors_total = 0
 
-        pattern_counts = Counter(patterns_found)
+        pattern_counts: Counter[str] = Counter()
+        pattern_counts_by_month: Dict[str, Counter[str]] = {}
+        month_totals: Dict[str, Dict[str, int]] = {}
+
+        def _take_evenly(items: List[Any], k: int) -> List[Any]:
+            if k <= 0 or not items:
+                return []
+            if len(items) <= k:
+                return list(items)
+            # deterministic even spacing across list
+            idxs = [int(round(i * (len(items) - 1) / (k - 1))) for i in range(k)]
+            seen = set()
+            out: List[Any] = []
+            for idx in idxs:
+                if idx not in seen:
+                    out.append(items[idx])
+                    seen.add(idx)
+            return out
+
+        # Candidate commits: subject matches fix/security keywords
+        candidates: List[Dict[str, Any]] = []
+        for c in (commits or []):
+            if not isinstance(c, dict):
+                continue
+            subject = (c.get('subject') or '')
+            if isinstance(subject, str) and fix_re.search(subject):
+                candidates.append(c)
+
+        # Prepare candidates with parsed datetime/month for sampling
+        enriched: List[Tuple[pd.Timestamp, str, Dict[str, Any]]] = []
+        for c in candidates:
+            dt = pd.to_datetime(c.get('date'), errors='coerce', utc=True)
+            if pd.isna(dt):
+                continue
+            month = dt.to_period('M').strftime('%Y-%m')
+            enriched.append((dt, month, c))
+
+        if not enriched:
+            return {
+                'enabled': True,
+                'repo_path': repo_path,
+                'message': 'No candidate commits matched fix/security keywords; AST analysis skipped.',
+                'analyzed_commits': 0,
+                'analyzed_files': 0,
+                'commits_with_patterns': 0,
+                'patterns_total': 0,
+                'errors_total': 0,
+                'top_patterns': [],
+                'patterns_by_month': [],
+                'candidates_total': 0,
+                'sample_strategy': sample_strategy,
+            }
+
+        candidates_total = len(enriched)
+
+        # Select commits according to sampling strategy
+        selected: List[Dict[str, Any]] = []
+        if sample_strategy in {'recent', 'latest', 'head'}:
+            enriched_sorted = sorted(enriched, key=lambda x: x[0], reverse=True)
+            selected = [c for _, _, c in enriched_sorted[:max_commits]]
+            sample_strategy = 'recent'
+        elif sample_strategy in {'chronological', 'oldest', 'asc'}:
+            enriched_sorted = sorted(enriched, key=lambda x: x[0])
+            selected = [c for _, _, c in enriched_sorted[:max_commits]]
+            sample_strategy = 'chronological'
+        elif sample_strategy in {'uniform_by_month', 'stratified_by_month', 'month'}:
+            # stable, spread across time
+            enriched_sorted = sorted(enriched, key=lambda x: x[0])
+            month_groups: Dict[str, List[Dict[str, Any]]] = {}
+            for _, m, c in enriched_sorted:
+                month_groups.setdefault(m, []).append(c)
+            months_sorted = sorted(month_groups.keys())
+            per_month = max(1, int(math.ceil(max_commits / max(1, len(months_sorted)))))
+            tmp: List[Dict[str, Any]] = []
+            for m in months_sorted:
+                tmp.extend(_take_evenly(month_groups[m], per_month))
+            selected = _take_evenly(tmp, max_commits)
+            sample_strategy = 'uniform_by_month'
+        else:
+            # fallback: keep old behavior but make it deterministic (recent)
+            enriched_sorted = sorted(enriched, key=lambda x: x[0], reverse=True)
+            selected = [c for _, _, c in enriched_sorted[:max_commits]]
+            sample_strategy = 'recent'
+
+        for commit in selected:
+            commit_hash = commit.get('hash') or ''
+            if not commit_hash:
+                continue
+
+            dt = pd.to_datetime(commit.get('date'), errors='coerce', utc=True)
+            if pd.isna(dt):
+                continue
+            month = dt.to_period('M').strftime('%Y-%m')
+
+            files = commit.get('files') if isinstance(commit.get('files'), list) else None
+            file_paths = [f for f in (files or []) if isinstance(f, str) and f]
+            if not file_paths:
+                file_paths = _get_files_for_commit(commit_hash)
+
+            py_files = [p for p in file_paths if _is_python_file(p)]
+            if not py_files:
+                continue
+            py_files = py_files[:max_files_per_commit]
+
+            analyzed_commits += 1
+            month_bucket = month_totals.setdefault(month, {'commits': 0, 'commits_with_patterns': 0, 'patterns_total': 0})
+            month_bucket['commits'] += 1
+            month_counter = pattern_counts_by_month.setdefault(month, Counter())
+
+            commit_patterns = 0
+            for path in py_files:
+                code = _get_file_at_commit(commit_hash, path)
+                if code is None:
+                    errors_total += 1
+                    continue
+
+                analyzed_files += 1
+                r = analyzer.analyze(code, file_path=path)
+                if r.get('error'):
+                    errors_total += 1
+                    continue
+
+                pts = r.get('patterns_found') or []
+                if pts:
+                    commit_patterns += len(pts)
+                    pattern_counts.update(pts)
+                    month_counter.update(pts)
+
+                patterns_total += int(r.get('security_issues_potential') or 0)
+                complexity_total += int(r.get('complexity_score') or 0)
+                function_count_total += int(r.get('function_count') or 0)
+
+            if commit_patterns > 0:
+                commits_with_patterns += 1
+                month_bucket['commits_with_patterns'] += 1
+                month_bucket['patterns_total'] += commit_patterns
+
+        # Build month series
+        months_sorted = sorted(month_totals.keys())
+        patterns_by_month = []
+        for m in months_sorted:
+            b = month_totals[m]
+            commits_n = int(b.get('commits') or 0)
+            patterns_n = int(b.get('patterns_total') or 0)
+            patterns_by_month.append(
+                {
+                    'month': m,
+                    'commits_analyzed': commits_n,
+                    'commits_with_patterns': int(b.get('commits_with_patterns') or 0),
+                    'patterns_total': patterns_n,
+                    'patterns_per_commit': float(patterns_n / commits_n) if commits_n else 0.0,
+                }
+            )
+
+        # top patterns time series (only for overall top N)
+        top_patterns = [{'pattern': p, 'count': int(n)} for p, n in pattern_counts.most_common(10)]
+        top_pattern_names = [x['pattern'] for x in top_patterns]
+        top_patterns_by_month: Dict[str, List[Dict[str, Any]]] = {}
+        for p in top_pattern_names:
+            top_patterns_by_month[p] = [
+                {'month': m, 'count': int((pattern_counts_by_month.get(m) or Counter()).get(p, 0))}
+                for m in months_sorted
+            ]
 
         return {
             'enabled': True,
-            'analyzed_commits_count': len(ast_results),
-            'security_issues_total': security_issues_total,
+            'repo_path': repo_path,
+            'message': None,
+            'candidates_total': candidates_total,
+            'sample_strategy': sample_strategy,
+            'analyzed_commits': analyzed_commits,
+            'analyzed_files': analyzed_files,
+            'commits_with_patterns': commits_with_patterns,
+            'patterns_total': patterns_total,
+            'errors_total': errors_total,
             'complexity_total': complexity_total,
             'function_count_total': function_count_total,
-            'top_patterns': [{'pattern': pattern, 'count': count} for pattern, count in pattern_counts.most_common(10)],
-            'has_security_related_fixes': security_issues_total > 0
+            'top_patterns': top_patterns,
+            'patterns_by_month': patterns_by_month,
+            'top_patterns_by_month': top_patterns_by_month,
+            'limits': {
+                'max_commits': max_commits,
+                'max_files_per_commit': max_files_per_commit,
+            },
         }

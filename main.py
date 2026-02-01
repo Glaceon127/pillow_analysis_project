@@ -43,6 +43,7 @@ def main() -> int:
     parser.add_argument('--bugs-json', default=default_bugs, help='Optional; if missing, bug section will be skipped')
     parser.add_argument('--charts-dir', default=os.path.join(base, 'outputs', 'charts'))
     parser.add_argument('--report', default=os.path.join(base, 'outputs', 'reports', 'pillow_report.md'))
+    parser.add_argument('--analysis-json', default=os.path.join(base, 'outputs', 'analysis_results.json'), help='Write full analysis_results to JSON for reuse')
 
     # Preflight self-check (enabled by default)
     parser.add_argument('--skip-self-check', action='store_true', help='Skip self_check preflight')
@@ -93,8 +94,26 @@ def main() -> int:
         'vulnerability': vuln_stats,
     }
 
+    # Persist analysis results for downstream tools (e.g., ast_visualizer)
+    try:
+        os.makedirs(os.path.dirname(args.analysis_json), exist_ok=True)
+        with open(args.analysis_json, 'w', encoding='utf-8') as f:
+            json.dump(analysis_results, f, ensure_ascii=False, indent=2)
+        print('[main] analysis_json:', args.analysis_json)
+    except Exception as e:
+        print('[main][WARN] failed to write analysis json:', e)
+
     charts = PlotGenerator().generate(analysis_results, out_dir=args.charts_dir)
     report_path = ReportBuilder().build(analysis_results, charts=charts, out_path=args.report)
+
+    # Also persist the aggregated analysis results for downstream tooling (e.g., ast_visualizer).
+    try:
+        analysis_json_path = os.path.join(os.path.dirname(report_path), 'analysis_results.json')
+        with open(analysis_json_path, 'w', encoding='utf-8') as f:
+            json.dump(analysis_results, f, ensure_ascii=False, indent=2)
+        print('[main] analysis_results:', analysis_json_path)
+    except Exception as e:
+        print('[main][WARN] failed to write analysis_results.json:', e)
 
     print('[main] charts_dir:', args.charts_dir)
     print('[main] report:', report_path)

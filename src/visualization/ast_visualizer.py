@@ -1,133 +1,101 @@
+from __future__ import annotations
+
+import argparse
 import json
 import os
+from typing import Any, Dict, List, Optional
+
 import matplotlib.pyplot as plt
-import seaborn as sns
-from collections import Counter
-from config.settings import OUTPUT_CHARTS_DIR
 
-# 设置中文字体（避免乱码）
-plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
-plt.rcParams["axes.unicode_minus"] = False
 
-def plot_ast_feature_distribution(ast_results_path: str, output_dir: str = OUTPUT_CHARTS_DIR):
-    """生成 AST 特征分布图表：修复涉及的节点类型/函数热区
-    Args:
-        ast_results_path: AST分析结果JSON文件路径
-        output_dir: 图表输出目录
+def plot_danger_patterns(ast_summary: Dict[str, Any], output_dir: str) -> Dict[str, str]:
+    """基于 CommitAnalyzer 的 ast_analysis_summary 生成图表。
+
+    输入 schema（关键字段）：
+    - enabled: bool
+    - patterns_by_month: [{'month','patterns_total',...}]
+    - top_patterns: [{'pattern','count'}]
     """
-    # 1. 读取 AST 分析结果
-    if not os.path.exists(ast_results_path):
-        print(f" AST分析结果文件不存在：{ast_results_path}")
-        return
-    
-    with open(ast_results_path, "r", encoding="utf-8") as f:
-        ast_results = json.load(f)
-    
-    # 2. 统计核心特征
-    node_type_counter = Counter()  # 节点类型频次
-    function_counter = Counter()  # 函数修改频次
-    file_counter = Counter()      # 文件修改频次
+    os.makedirs(output_dir, exist_ok=True)
+    charts: Dict[str, str] = {}
 
-    for commit in ast_results:
-        for file_analysis in commit["ast_analysis"]:
-            # 跳过解析失败的文件
-            if file_analysis.get("error"):
-                continue
-            
-            # 累加统计
-            node_types = file_analysis.get("unique_node_types", [])
-            functions = file_analysis.get("touched_functions", [])
-            file_path = file_analysis.get("file_path", "")
+    if not (ast_summary or {}).get('enabled'):
+        print('[ast_visualizer] AST summary disabled or missing.')
+        return charts
 
-            node_type_counter.update(node_types)
-            function_counter.update(functions)
-            if file_path:
-                file_counter[file_path] += 1
-
-    # 3. 生成节点类型分布图表（Top 10）
-    plt.figure(figsize=(12, 6))
-    top_node_types = node_type_counter.most_common(10)
-    if top_node_types:
-        sns.barplot(x=[x[0] for x in top_node_types], y=[x[1] for x in top_node_types])
-        plt.title("Bug 修复涉及的 AST 节点类型（Top 10）", fontsize=14)
-        plt.xlabel("节点类型", fontsize=12)
-        plt.ylabel("出现频次", fontsize=12)
-        plt.xticks(rotation=45)
+    patterns_by_month: List[Dict[str, Any]] = ast_summary.get('patterns_by_month') or []
+    if patterns_by_month:
+        months = [x.get('month') for x in patterns_by_month]
+        counts = [int(x.get('patterns_total', 0) or 0) for x in patterns_by_month]
+        xs = list(range(len(months)))
+        plt.figure(figsize=(10, 4))
+        plt.plot(xs, counts, marker='o')
+        # thin ticks
+        max_ticks = 24
+        if len(months) > max_ticks:
+            step = max(1, len(months) // max_ticks)
+            positions = list(range(0, len(months), step))
+            if positions and positions[-1] != len(months) - 1:
+                positions.append(len(months) - 1)
+        else:
+            positions = xs
+        labels = [months[i] for i in positions]
+        plt.xticks(positions, labels, rotation=45, ha='right')
+        plt.title('每月危险模式命中次数（AST信号）')
+        plt.xlabel('月份')
+        plt.ylabel('命中次数（次）')
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, "ast_node_type_dist.png"), dpi=300)
-    else:
-        print(" 无节点类型数据，跳过节点类型图表生成")
+        path = os.path.join(output_dir, 'ast_patterns_by_month.png')
+        plt.savefig(path, dpi=150)
+        plt.close()
+        charts['ast_patterns_by_month'] = path
 
-    # 4. 生成函数修改热区图表（Top 10）
-    plt.figure(figsize=(12, 6))
-    top_functions = function_counter.most_common(10)
-    if top_functions:
-        sns.barplot(x=[x[0] for x in top_functions], y=[x[1] for x in top_functions])
-        plt.title("Bug 修复热区函数（Top 10）", fontsize=14)
-        plt.xlabel("函数名", fontsize=12)
-        plt.ylabel("修改频次", fontsize=12)
-        plt.xticks(rotation=45)
+    top_patterns: List[Dict[str, Any]] = ast_summary.get('top_patterns') or []
+    if top_patterns:
+        names = [x.get('pattern', '') for x in top_patterns[:10]]
+        values = [int(x.get('count', 0) or 0) for x in top_patterns[:10]]
+        plt.figure(figsize=(10, 4))
+        plt.bar(names, values)
+        plt.title('危险模式 Top 10（AST信号）')
+        plt.xlabel('模式')
+        plt.ylabel('出现次数（次）')
+        plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, "ast_function_hotspot.png"), dpi=300)
-    else:
-        print(" 无函数数据，跳过热区函数图表生成")
+        path = os.path.join(output_dir, 'ast_top_patterns.png')
+        plt.savefig(path, dpi=150)
+        plt.close()
+        charts['ast_top_patterns'] = path
 
-    # 5. 生成文件修改频次图表（Top 10）
-    plt.figure(figsize=(12, 6))
-    top_files = file_counter.most_common(10)
-    if top_files:
-        # 简化文件名（只保留最后两级）
-        simplified_files = ["/".join(x[0].split("/")[-2:]) for x in top_files]
-        sns.barplot(x=simplified_files, y=[x[1] for x in top_files])
-        plt.title("Bug 修复热区文件（Top 10）", fontsize=14)
-        plt.xlabel("文件路径（简化）", fontsize=12)
-        plt.ylabel("修改频次", fontsize=12)
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, "ast_file_hotspot.png"), dpi=300)
-    else:
-        print(" 无文件数据，跳过热区文件图表生成")
+    return charts
 
-    plt.close("all")
-    print(f" AST可视化图表已生成至：{output_dir}")
 
-def plot_commit_ast_summary(ast_results_path: str, output_dir: str = OUTPUT_CHARTS_DIR):
-    """生成Commit级别的AST分析汇总图表"""
-    if not os.path.exists(ast_results_path):
-        print(f" AST分析结果文件不存在：{ast_results_path}")
-        return
-    
-    with open(ast_results_path, "r", encoding="utf-8") as f:
-        ast_results = json.load(f)
-    
-    # 统计每个Commit匹配的行数/节点数
-    commit_matched_lines = []
-    commit_node_types = []
-    commit_hashes = []
+def _load_ast_summary_from_analysis_results(path: str) -> Optional[Dict[str, Any]]:
+    if not os.path.exists(path):
+        return None
+    with open(path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        return None
+    commit = (data.get('commit') or {}) if isinstance(data.get('commit'), dict) else {}
+    ast_summary = commit.get('ast_analysis_summary')
+    return ast_summary if isinstance(ast_summary, dict) else None
 
-    for commit in ast_results:
-        total_matched = 0
-        total_nodes = 0
-        for file_analysis in commit["ast_analysis"]:
-            total_matched += file_analysis.get("matched_lines", 0)
-            total_nodes += len(file_analysis.get("unique_node_types", []))
-        
-        if total_matched > 0:
-            commit_hashes.append(commit["commit_hash"][:8])  # 只显示前8位hash
-            commit_matched_lines.append(total_matched)
-            commit_node_types.append(total_nodes)
 
-    # 生成Commit匹配行数分布
-    plt.figure(figsize=(15, 6))
-    if commit_hashes:
-        sns.barplot(x=commit_hashes, y=commit_matched_lines)
-        plt.title("各Commit修复代码匹配行数", fontsize=14)
-        plt.xlabel("Commit Hash（前8位）", fontsize=12)
-        plt.ylabel("匹配行数", fontsize=12)
-        plt.xticks(rotation=90)
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, "commit_matched_lines.png"), dpi=300)
-    else:
-        print(" 无Commit匹配数据，跳过Commit行数图表生成")
+def main() -> int:
+    parser = argparse.ArgumentParser(description='AST dangerous-pattern visualizer (reads analysis_results.json)')
+    parser.add_argument('--analysis-json', required=True, help='Path to analysis_results.json produced by main.py')
+    parser.add_argument('--out', default=os.path.join('outputs', 'charts'), help='Output charts directory')
+    args = parser.parse_args()
 
-    plt.close("all")
+    ast_summary = _load_ast_summary_from_analysis_results(args.analysis_json)
+    if not ast_summary:
+        print('[ast_visualizer][ERROR] ast_analysis_summary not found in analysis json.')
+        return 2
+
+    charts = plot_danger_patterns(ast_summary, output_dir=args.out)
+    print('[ast_visualizer] wrote:', charts)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

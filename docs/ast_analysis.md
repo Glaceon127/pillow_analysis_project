@@ -28,15 +28,12 @@
 
 ## 使用方法
 
-### 安装依赖
+### 前置条件
 
-确保安装了AST分析所需的依赖：
+AST 分析使用标准库 `ast`（无需额外三方 AST 依赖），但需要：
 
-```bash
-pip install -r requirements.txt
-```
-
-这将安装`libcst`库，用于进行AST分析。
+1) 本机存在 Pillow 的本地 git 仓库
+2) 在 [config/local_settings.py](../config/local_settings.py) 或环境变量中配置 `PILLOW_REPO_PATH`
 
 ### 运行AST分析
 
@@ -66,6 +63,8 @@ python tools/run_ast_analysis.py --code-only
 python main.py
 ```
 
+说明：AST 分析默认只对“疑似修复类提交（subject 命中 fix/security/bug 等关键词）”做扫描，以控制性能。
+
 ## 实现细节
 
 ### ASTAnalyzer类
@@ -79,12 +78,15 @@ python main.py
 
 ### 与CommitAnalyzer集成
 
-`src/analysis_core/commit_analyzer.py`中的`_perform_ast_analysis`方法将AST分析结果与提交数据相结合，提供以下信息：
+`src/analysis_core/commit_analyzer.py`中的`_perform_ast_analysis`方法将AST分析结果与提交数据相结合：
 
-- 分析的提交数量
-- 检测到的安全问题总数
-- 代码复杂度统计
-- 最常见的代码模式
+- 对每个候选 commit，通过 `git show <sha>:<path>` 读取该 commit 版本的源码
+- 运行 ASTAnalyzer 识别危险模式（如 `eval/exec`、`os.system`、`subprocess.*(shell=True)`、`pickle.loads` 等）
+- 按月聚合趋势与 Top patterns
+
+- 分析的提交数量/文件数量
+- 危险模式命中次数（总计、按月）
+- Top patterns（整体）
 
 ### 报告生成
 
@@ -95,13 +97,13 @@ python main.py
 - 代码复杂度统计
 - 常见模式列表
 
-## 输出示例
+## 输出示例（单文件）
 
 AST分析会生成以下类型的输出：
 
 ```json
 {
-  "patterns_found": ["security_eval_exec_usage"],
+  "patterns_found": ["danger_eval"],
   "security_issues_potential": 1,
   "complexity_score": 3,
   "function_count": 1,
@@ -117,3 +119,6 @@ AST分析会生成以下类型的输出：
 2. 对于非Python代码，分析器将返回空结果
 3. 为了获得最佳效果，建议在运行AST分析之前先获取足够的提交数据
 4. AST分析可能会增加整体分析时间，特别是在处理大量提交时
+5. 可通过环境变量限制分析规模：
+  - `PILLOW_AST_MAX_COMMITS`（默认 300）
+  - `PILLOW_AST_MAX_FILES_PER_COMMIT`（默认 30）

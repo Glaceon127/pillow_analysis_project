@@ -77,6 +77,7 @@ COLOR_BUG = '#F18F01'       # Bug相关图表主色（橙）
 COLOR_CVE = '#C73E1D'       # CVE漏洞相关图表主色（红）
 COLOR_MEAN = '#3F88C5'      # 平均值线条色
 COLOR_P90 = '#90A959'       # P90值线条色
+COLOR_AST = '#6F4E7C'       # AST危险模式相关图表主色（深紫）
 
 class PlotGenerator:
     def generate(self, analysis_results: Dict[str, Any], out_dir: str) -> Dict[str, str]:
@@ -180,6 +181,42 @@ class PlotGenerator:
             plt.savefig(path, dpi=150)
             plt.close()
             charts['change_size_by_month'] = path
+
+        # 0d) AST dangerous patterns by month (signal-only)
+        ast_summary = (commit.get('ast_analysis_summary') or {}) if isinstance(commit, dict) else {}
+        ast_by_month: List[Dict[str, Any]] = ast_summary.get('patterns_by_month') or []
+        if ast_summary.get('enabled') and ast_by_month:
+            months = [x.get('month') for x in ast_by_month]
+            counts = [int(x.get('patterns_total', 0) or 0) for x in ast_by_month]
+            plt.figure(figsize=(10, 4))
+            xs, tick_pos, tick_labels = _thin_month_ticks(months, max_ticks=24)
+            plt.plot(xs, counts, marker='o', color=COLOR_AST)
+            plt.xticks(tick_pos, tick_labels, rotation=45, ha='right')
+            plt.title('每月危险模式命中次数（AST信号）')
+            plt.xlabel('月份')
+            plt.ylabel('命中次数（次）')
+            plt.tight_layout()
+            path = os.path.join(out_dir, 'ast_patterns_by_month.png')
+            plt.savefig(path, dpi=150)
+            plt.close()
+            charts['ast_patterns_by_month'] = path
+
+        # 0e) AST top patterns (overall)
+        top_patterns: List[Dict[str, Any]] = ast_summary.get('top_patterns') or []
+        if ast_summary.get('enabled') and top_patterns:
+            names = [x.get('pattern', '') for x in top_patterns[:10]]
+            values = [int(x.get('count', 0) or 0) for x in top_patterns[:10]]
+            plt.figure(figsize=(10, 4))
+            plt.bar(names, values, color=COLOR_AST)
+            plt.title('危险模式 Top 10（AST信号）')
+            plt.xlabel('模式')
+            plt.ylabel('出现次数（次）')
+            plt.xticks(rotation=45, ha='right')
+            plt.tight_layout()
+            path = os.path.join(out_dir, 'ast_top_patterns.png')
+            plt.savefig(path, dpi=150)
+            plt.close()
+            charts['ast_top_patterns'] = path
 
         # A) Bug issues: created vs closed by month
         created_by_month: List[Dict[str, Any]] = issues.get('created_by_month') or []

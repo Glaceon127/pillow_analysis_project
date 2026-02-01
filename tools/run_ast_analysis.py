@@ -108,13 +108,13 @@ def analyze_commits_with_ast():
         
         if ast_summary.get('enabled', False):
             print(f"AST分析状态: 已启用")
-            print(f"分析的提交数: {ast_summary.get('analyzed_commits_count', 0)}")
-            print(f"检测到的安全问题总数: {ast_summary.get('security_issues_total', 0)}")
-            print(f"总复杂度评分: {ast_summary.get('complexity_total', 0)}")
-            print(f"总函数数: {ast_summary.get('function_count_total', 0)}")
-            
-            if ast_summary.get('has_security_related_fixes'):
-                print("包含安全相关修复: 是")
+            if ast_summary.get('message'):
+                print(f"备注: {ast_summary.get('message')}")
+            print(f"本地仓库: {ast_summary.get('repo_path', '')}")
+            print(f"分析的提交数(受上限限制): {ast_summary.get('analyzed_commits', 0)}")
+            print(f"分析的Python文件数: {ast_summary.get('analyzed_files', 0)}")
+            print(f"命中危险模式的提交数: {ast_summary.get('commits_with_patterns', 0)}")
+            print(f"危险模式命中总次数: {ast_summary.get('patterns_total', 0)}")
             
             top_patterns = ast_summary.get('top_patterns', [])
             if top_patterns:

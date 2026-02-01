@@ -7,6 +7,11 @@ from typing import Any, Dict, List, Optional
 
 import matplotlib.pyplot as plt
 
+from src.visualization.style import apply_style
+
+
+apply_style()
+
 
 def plot_danger_patterns(ast_summary: Dict[str, Any], output_dir: str) -> Dict[str, str]:
     """基于 CommitAnalyzer 的 ast_analysis_summary 生成图表。

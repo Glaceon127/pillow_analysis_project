@@ -13,82 +13,31 @@ from typing import Any, Dict, List
 
 import matplotlib.pyplot as plt
 
-# ===================== 新增：全局中文+风格配置 =====================
-# 1. 解决中文显示乱码/方框问题
-# 自动检测系统并选择更合适的字体列表；同时静默 findfont 噪音警告。
-logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
+from src.visualization.style import (
+    apply_style,
+    COLOR_AST,
+    COLOR_BUG,
+    COLOR_COMMIT,
+    COLOR_CVE,
+    COLOR_FIX,
+    COLOR_MEAN,
+    COLOR_P90,
+)
 
-def _configure_font_family_for_os() -> None:
-    platform = sys.platform.lower()
-    if platform.startswith('darwin'):
-        # macOS
-        families = [
-            'PingFang SC',
-            'Hiragino Sans GB',
-            'Heiti SC',
-            'STHeiti',
-            'Arial Unicode MS',
-            'Noto Sans CJK SC',
-            'DejaVu Sans',
-        ]
-    elif platform.startswith('win'):
-        # Windows
-        families = [
-            'Microsoft YaHei',
-            'SimHei',
-            'Arial Unicode MS',
-            'Noto Sans CJK SC',
-            'DejaVu Sans',
-        ]
-    else:
-        # Linux / others
-        families = [
-            'Noto Sans CJK SC',
-            'WenQuanYi Micro Hei',
-            'WenQuanYi Zen Hei',
-            'Arial Unicode MS',
-            'DejaVu Sans',
-        ]
-
-    plt.rcParams['font.family'] = families
-
-
-_configure_font_family_for_os()
-plt.rcParams["axes.unicode_minus"] = False  # 负号正常显示
-
-# 2. 统一所有图表风格（视觉一致性）
-plt.rcParams["figure.facecolor"] = "white"    # 画布背景白
-plt.rcParams["axes.facecolor"] = "white"     # 坐标轴背景白
-plt.rcParams["axes.grid"] = True             # 显示网格（提升可读性）
-plt.rcParams["grid.linestyle"] = "--"        # 网格虚线
-plt.rcParams["grid.alpha"] = 0.5             # 网格透明度
-plt.rcParams["lines.markersize"] = 4         # 标记点大小统一
-plt.rcParams["lines.linewidth"] = 1.5        # 线条宽度统一
-plt.rcParams["legend.fontsize"] = 10         # 图例字体大小
-plt.rcParams["axes.titlesize"] = 12          # 标题字体大小
-plt.rcParams["axes.labelsize"] = 10          # 坐标轴标签大小
-plt.rcParams["xtick.labelsize"] = 9          # x轴刻度大小
-plt.rcParams["ytick.labelsize"] = 9          # y轴刻度大小
-# ======================================================================
-# ========== 新增：全局配色常量（核心改进） ==========
-COLOR_COMMIT = '#2E86AB'    # 提交相关图表主色（蓝）
-COLOR_FIX = '#A23B72'       # 修复相关图表主色（紫）
-COLOR_BUG = '#F18F01'       # Bug相关图表主色（橙）
-COLOR_CVE = '#C73E1D'       # CVE漏洞相关图表主色（红）
-COLOR_MEAN = '#3F88C5'      # 平均值线条色
-COLOR_P90 = '#90A959'       # P90值线条色
-COLOR_AST = '#6F4E7C'       # AST危险模式相关图表主色（深紫）
+# ===================== 统一风格入口 =====================
+apply_style()
 
 class PlotGenerator:
     def generate(self, analysis_results: Dict[str, Any], out_dir: str) -> Dict[str, str]:
         os.makedirs(out_dir, exist_ok=True)
         charts: Dict[str, str] = {}
 
-        # 新增：打印数据，排查空值
-        print("=== 数据检查 ===")
-        print("commit数据：", analysis_results.get('commit'))
-        print("issues数据：", analysis_results.get('issues'))
-        print("vuln数据：", analysis_results.get('vulnerability'))  # 重点看这行
+        # Optional debug output
+        if os.getenv('PILLOW_ANALYSIS_DEBUG', '').strip() in {'1', 'true', 'True', 'yes', 'YES'}:
+            print("=== 数据检查 ===")
+            print("commit数据：", analysis_results.get('commit'))
+            print("issues数据：", analysis_results.get('issues'))
+            print("vuln数据：", analysis_results.get('vulnerability'))
         def _thin_month_ticks(month_labels: List[str], max_ticks: int = None):
             if max_ticks is None:
                 max_ticks = 24

@@ -44,6 +44,41 @@
 			],
 			"problemMatcher": [],
 			"isBackground": false
+		},
+		{
+			"label": "self_check",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"self_check\\self_check.py"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "self_check_py",
+			"type": "shell",
+			"command": "py",
+			"args": [
+				"-3",
+				"self_check\\self_check.py"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "self_check_cmd",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/c",
+				"py -3 self_check\\self_check.py"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
 		}
 	]
 }

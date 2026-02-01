@@ -391,6 +391,187 @@ def check_git_available() -> CheckResult:
     return _fail("Git availability", out or "git --version failed", fix)
 
 
+def check_local_settings_safety() -> List[CheckResult]:
+    """自检：local_settings 是否安全。
+
+    - 如果 config/local_settings.py 被 git 跟踪：FAIL（高风险误提交）
+    - 如果文件包含疑似 token/key：WARN（提醒不要外发/不要提交）
+    """
+    results: List[CheckResult] = []
+    local = PROJECT_ROOT / "config" / "local_settings.py"
+    if not local.exists():
+        return results
+
+    # 1) tracked by git?
+    code, out = _run_cmd(["git", "ls-files", "--", str(local)], cwd=PROJECT_ROOT)
+    if code == 0 and out.strip():
+        results.append(
+            _fail(
+                "config/local_settings.py tracked",
+                f"Tracked by git: {_safe_rel(local)}",
+                "Remove it from git index (keep local file):\n"
+                "  git rm --cached config/local_settings.py\n"
+                "And ensure it is listed in .gitignore.",
+            )
+        )
+    else:
+        results.append(_pass("config/local_settings.py tracked", "Not tracked by git"))
+
+    # 2) token-like patterns
+    try:
+        text = local.read_text(encoding="utf-8", errors="replace")
+        patterns = {
+            "github_token": r"\b(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b",
+            "generic_token": r"\b(token|api[_-]?key|secret)\b\s*=\s*['\"][^'\"]{12,}['\"]",
+        }
+        hits = [name for name, pat in patterns.items() if re.search(pat, text, flags=re.IGNORECASE)]
+        if hits:
+            results.append(
+                _warn(
+                    "config/local_settings.py secrets",
+                    f"Potential secret patterns found: {', '.join(hits)}",
+                    "Make sure config/local_settings.py is not committed and do not share it. "
+                    "Prefer using environment variables for tokens.",
+                )
+            )
+        else:
+            results.append(_pass("config/local_settings.py secrets", "No obvious token patterns"))
+    except Exception as e:
+        results.append(_warn("config/local_settings.py secrets", f"Cannot scan file: {e}"))
+
+    return results
+
+
+def check_ast_coverage() -> List[CheckResult]:
+    """自检：AST 分析覆盖率与跳过原因（非阻断）。"""
+    results: List[CheckResult] = []
+    analysis_json = PROJECT_ROOT / "outputs" / "analysis_results.json"
+    if not analysis_json.exists():
+        return results
+
+    try:
+        data = json.loads(analysis_json.read_text(encoding="utf-8", errors="replace"))
+        commit = data.get('commit') if isinstance(data, dict) else None
+        if not isinstance(commit, dict):
+            return results
+        asts = commit.get('ast_analysis_summary')
+        if not isinstance(asts, dict):
+            return results
+        if not asts.get('enabled'):
+            msg = asts.get('message') or 'disabled'
+            results.append(_warn('AST coverage', f"AST disabled: {msg}", "Set PILLOW_REPO_PATH to a local Pillow git clone."))
+            return results
+
+        candidates_total = int(asts.get('candidates_total') or 0)
+        selected_commits = int(asts.get('selected_commits') or 0)
+        analyzed_commits = int(asts.get('analyzed_commits') or 0)
+        analyzed_files = int(asts.get('analyzed_files') or 0)
+        skipped_no_files = int(asts.get('skipped_no_files_listed') or 0)
+        skipped_no_py = int(asts.get('skipped_no_python_files') or 0)
+        strategy = str(asts.get('sample_strategy') or '')
+
+        details = (
+            f"strategy={strategy}; candidates={candidates_total}; selected={selected_commits}; "
+            f"analyzed_commits={analyzed_commits}; analyzed_files={analyzed_files}; "
+            f"skipped_no_files={skipped_no_files}; skipped_no_python={skipped_no_py}"
+        )
+
+        # Heuristics: warn if analysis is tiny compared to selected
+        if selected_commits >= 200 and analyzed_commits < max(50, int(0.1 * selected_commits)):
+            results.append(
+                _warn(
+                    'AST coverage',
+                    details,
+                    "Many selected commits were skipped. Common reasons: commits without file lists, or no .py files. "
+                    "Try increasing max commits and/or include tests in analysis (future option), and ensure git can read commit file lists.",
+                )
+            )
+        elif selected_commits > 0 and (skipped_no_py / max(1, selected_commits)) >= 0.5:
+            results.append(
+                _warn(
+                    'AST coverage',
+                    details,
+                    "High 'no python files' ratio. This is expected if many fixes touch C/docs/CI. "
+                    "If you want more Python coverage, consider including Tests/ in future.",
+                )
+            )
+        else:
+            results.append(_pass('AST coverage', details))
+    except Exception as e:
+        results.append(_warn('AST coverage', f"Failed to parse outputs/analysis_results.json: {e}"))
+
+    return results
+
+
+def check_artifact_consistency() -> List[CheckResult]:
+    """自检：主流程产物一致性（非阻断）。
+
+    - outputs/analysis_results.json 与 outputs/charts/* 和 outputs/reports/pillow_report.md 的时间顺序
+    - 若存在 outputs/reports/analysis_results.json，提示用户避免混淆
+    """
+    results: List[CheckResult] = []
+
+    analysis_json = PROJECT_ROOT / "outputs" / "analysis_results.json"
+    report = PROJECT_ROOT / "outputs" / "reports" / "pillow_report.md"
+    charts_dir = PROJECT_ROOT / "outputs" / "charts"
+    alt_analysis = PROJECT_ROOT / "outputs" / "reports" / "analysis_results.json"
+
+    if alt_analysis.exists():
+        results.append(
+            _warn(
+                'Duplicate analysis_results.json',
+                f"Found: {_safe_rel(alt_analysis)}",
+                "Canonical file is outputs/analysis_results.json. Consider deleting the duplicate to avoid confusion.",
+            )
+        )
+
+    if not analysis_json.exists():
+        return results
+
+    try:
+        a_mtime = analysis_json.stat().st_mtime
+    except Exception as e:
+        return results + [_warn('Artifact consistency', f"Cannot stat analysis json: {e}")]
+
+    # Report should not be older than analysis (main writes analysis then report)
+    if report.exists():
+        try:
+            r_mtime = report.stat().st_mtime
+            if r_mtime + 1 < a_mtime:
+                results.append(
+                    _warn(
+                        'Artifact consistency',
+                        f"Report appears older than analysis json: {_safe_rel(report)}",
+                        'Re-run: python main.py (ensure you are looking at the latest outputs).',
+                    )
+                )
+            else:
+                results.append(_pass('Artifact consistency (report)', 'Report is consistent with analysis json'))
+        except Exception as e:
+            results.append(_warn('Artifact consistency (report)', f"Cannot stat report: {e}"))
+
+    # At least one chart should be newer than analysis (charts generated after analysis)
+    if charts_dir.exists():
+        try:
+            charts = list(charts_dir.glob('*.png'))
+            if charts:
+                newest = max((p.stat().st_mtime for p in charts), default=0)
+                if newest + 1 < a_mtime:
+                    results.append(
+                        _warn(
+                            'Artifact consistency (charts)',
+                            'Charts appear older than analysis json.',
+                            'Re-run: python main.py; ensure charts are refreshed.',
+                        )
+                    )
+                else:
+                    results.append(_pass('Artifact consistency (charts)', f"{len(charts)} charts look consistent"))
+        except Exception as e:
+            results.append(_warn('Artifact consistency (charts)', f"Cannot inspect charts: {e}"))
+
+    return results
+
+
 def check_network_and_github(cfg: Dict[str, Any], timeout: int = 8) -> List[CheckResult]:
     """
     可选网络检查：
@@ -664,6 +845,9 @@ def run_all(strict: bool, no_network: bool, run_https_tool: bool) -> int:
     local_settings_res, cfg = check_local_settings()
     results.append(local_settings_res)
 
+    # 2b) local_settings 安全检查（防误提交/泄露）
+    results.extend(check_local_settings_safety())
+
     # 3) 依赖配置后才能检查 Pillow repo path
     if cfg:
         results.append(check_pillow_repo_path(cfg))
@@ -679,6 +863,10 @@ def run_all(strict: bool, no_network: bool, run_https_tool: bool) -> int:
 
     # 5b) 输出产物检查（不阻断）
     results.extend(check_output_artifacts())
+
+    # 5c) AST 覆盖率与产物一致性（不阻断）
+    results.extend(check_ast_coverage())
+    results.extend(check_artifact_consistency())
 
     # 6) 网络相关检查（可关闭）
     if (not no_network) and cfg:

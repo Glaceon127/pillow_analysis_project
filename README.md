@@ -61,5 +61,6 @@
 
 ## 已知限制 / 待完善点（路线图）
 
-- `src/analysis_core/ast_analyzer.py` 目前是占位实现（未接入主流程）；后续可做“修复代码模式/修复热区”的静态分析扩展。
+- AST 分析已接入主流程（标准库 `ast`）：对疑似修复类提交扫描危险模式并按月聚合趋势；需要配置 `PILLOW_REPO_PATH` 指向本机 Pillow git 仓库。
+  - 可用环境变量限制开销：`PILLOW_AST_MAX_COMMITS`、`PILLOW_AST_MAX_FILES_PER_COMMIT`。
 - `git log --numstat` 对 merge commit 默认不给出 diff，因此 merge commit 的变更规模会显示为 0；做变更规模建议 `--no-merges` 或 `--first-parent`。

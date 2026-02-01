@@ -111,10 +111,14 @@ def analyze_commits_with_ast():
             if ast_summary.get('message'):
                 print(f"备注: {ast_summary.get('message')}")
             print(f"本地仓库: {ast_summary.get('repo_path', '')}")
+            print(f"候选提交总数: {ast_summary.get('candidates_total', 0)}")
+            print(f"抽样策略: {ast_summary.get('sample_strategy', '')}")
+            print(f"选中的提交数(上限前): {ast_summary.get('selected_commits', 0)}")
             print(f"分析的提交数(受上限限制): {ast_summary.get('analyzed_commits', 0)}")
             print(f"分析的Python文件数: {ast_summary.get('analyzed_files', 0)}")
             print(f"命中危险模式的提交数: {ast_summary.get('commits_with_patterns', 0)}")
             print(f"危险模式命中总次数: {ast_summary.get('patterns_total', 0)}")
+            print(f"跳过: 缺hash={ast_summary.get('skipped_missing_hash', 0)}; 无文件列表={ast_summary.get('skipped_no_files_listed', 0)}; 无Python文件={ast_summary.get('skipped_no_python_files', 0)}")
             
             top_patterns = ast_summary.get('top_patterns', [])
             if top_patterns:

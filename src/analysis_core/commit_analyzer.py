@@ -272,6 +272,11 @@ class CommitAnalyzer:
         function_count_total = 0
         errors_total = 0
 
+        selected_commits = 0
+        skipped_missing_hash = 0
+        skipped_no_files_listed = 0
+        skipped_no_python_files = 0
+
         pattern_counts: Counter[str] = Counter()
         pattern_counts_by_month: Dict[str, Counter[str]] = {}
         month_totals: Dict[str, Dict[str, int]] = {}
@@ -357,8 +362,10 @@ class CommitAnalyzer:
             sample_strategy = 'recent'
 
         for commit in selected:
+            selected_commits += 1
             commit_hash = commit.get('hash') or ''
             if not commit_hash:
+                skipped_missing_hash += 1
                 continue
 
             dt = pd.to_datetime(commit.get('date'), errors='coerce', utc=True)
@@ -371,8 +378,13 @@ class CommitAnalyzer:
             if not file_paths:
                 file_paths = _get_files_for_commit(commit_hash)
 
+            if not file_paths:
+                skipped_no_files_listed += 1
+                continue
+
             py_files = [p for p in file_paths if _is_python_file(p)]
             if not py_files:
+                skipped_no_python_files += 1
                 continue
             py_files = py_files[:max_files_per_commit]
 
@@ -442,6 +454,10 @@ class CommitAnalyzer:
             'message': None,
             'candidates_total': candidates_total,
             'sample_strategy': sample_strategy,
+            'selected_commits': selected_commits,
+            'skipped_missing_hash': skipped_missing_hash,
+            'skipped_no_files_listed': skipped_no_files_listed,
+            'skipped_no_python_files': skipped_no_python_files,
             'analyzed_commits': analyzed_commits,
             'analyzed_files': analyzed_files,
             'commits_with_patterns': commits_with_patterns,

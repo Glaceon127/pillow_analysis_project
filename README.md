@@ -62,5 +62,33 @@
 ## 已知限制 / 待完善点（路线图）
 
 - AST 分析已接入主流程（标准库 `ast`）：对疑似修复类提交扫描危险模式并按月聚合趋势；需要配置 `PILLOW_REPO_PATH` 指向本机 Pillow git 仓库。
-  - 可用环境变量限制开销：`PILLOW_AST_MAX_COMMITS`、`PILLOW_AST_MAX_FILES_PER_COMMIT`。
+  - 可用环境变量控制样本/开销：`PILLOW_AST_MAX_COMMITS`、`PILLOW_AST_MAX_FILES_PER_COMMIT`、`PILLOW_AST_SAMPLE_STRATEGY`（例如 `uniform_by_month`）。
+  - 是否需要“下次再 set 参数”？
+    - 如果你只是想用默认配置：不需要。
+    - 如果你想持续使用自定义样本/策略：需要。
+      - 说明：用 `set/export/$env:` 设置的环境变量通常只在“当前终端会话”生效；新开一个终端窗口需要重新设置。
+      - 你也可以把它们写进系统环境变量（永久生效），或写进一个你自己的启动脚本（例如 `run_with_env.cmd`）。
+
+### AST 样本扩大示例
+
+Windows cmd.exe：
+
+- `set PILLOW_AST_MAX_COMMITS=3000`
+- `set PILLOW_AST_MAX_FILES_PER_COMMIT=30`
+- `set PILLOW_AST_SAMPLE_STRATEGY=uniform_by_month`
+- `python main.py`
+
+PowerShell：
+
+- `$env:PILLOW_AST_MAX_COMMITS='3000'`
+- `$env:PILLOW_AST_MAX_FILES_PER_COMMIT='30'`
+- `$env:PILLOW_AST_SAMPLE_STRATEGY='uniform_by_month'`
+- `python main.py`
+
+Git Bash：
+
+- `export PILLOW_AST_MAX_COMMITS=3000`
+- `export PILLOW_AST_MAX_FILES_PER_COMMIT=30`
+- `export PILLOW_AST_SAMPLE_STRATEGY=uniform_by_month`
+- `python main.py`
 - `git log --numstat` 对 merge commit 默认不给出 diff，因此 merge commit 的变更规模会显示为 0；做变更规模建议 `--no-merges` 或 `--first-parent`。

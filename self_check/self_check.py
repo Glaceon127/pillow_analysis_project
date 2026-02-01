@@ -49,6 +49,20 @@ class CheckResult:
     ok: bool
     details: str = ""
     fix: str = ""
+    # severity is informational; exit code is still driven by `ok` and strict/core rules.
+    severity: str = "PASS"  # PASS | WARN | FAIL
+
+
+def _warn(name: str, details: str = "", fix: str = "") -> CheckResult:
+    return CheckResult(name=name, ok=True, details=details, fix=fix, severity="WARN")
+
+
+def _fail(name: str, details: str = "", fix: str = "") -> CheckResult:
+    return CheckResult(name=name, ok=False, details=details, fix=fix, severity="FAIL")
+
+
+def _pass(name: str, details: str = "") -> CheckResult:
+    return CheckResult(name=name, ok=True, details=details, severity="PASS")
 
 
 def _run_cmd(cmd: List[str], cwd: Optional[Path] = None, timeout: int = 30) -> Tuple[int, str]:
@@ -164,7 +178,9 @@ def check_python_version(min_major: int = 3, min_minor: int = 8) -> CheckResult:
     ok = (v.major, v.minor) >= (min_major, min_minor)
     details = f"Python: {v.major}.{v.minor}.{v.micro} ({platform.python_implementation()})"
     fix = f"Use Python >= {min_major}.{min_minor}."
-    return CheckResult("Python version", ok, details, fix if not ok else "")
+    if ok:
+        return _pass("Python version", details)
+    return _fail("Python version", details, fix)
 
 
 def check_project_layout() -> CheckResult:
@@ -182,7 +198,9 @@ def check_project_layout() -> CheckResult:
     ok = len(missing) == 0
     details = "OK" if ok else "Missing: " + ", ".join(_safe_rel(p) for p in missing)
     fix = "Please ensure you're running self_check inside the repository root, and files are not deleted."
-    return CheckResult("Project layout", ok, details, fix if not ok else "")
+    if ok:
+        return _pass("Project layout", details)
+    return _fail("Project layout", details, fix)
 
 
 def check_local_settings() -> Tuple[CheckResult, Dict[str, Any]]:
@@ -200,9 +218,8 @@ def check_local_settings() -> Tuple[CheckResult, Dict[str, Any]]:
     if not example.exists():
         # 模板缺失：属于异常情况（不一定致命，但很可疑）
         return (
-            CheckResult(
+            _fail(
                 "local_settings template",
-                False,
                 f"Missing: {_safe_rel(example)}",
                 "Restore config/local_settings.py.example from repo.",
             ),
@@ -220,16 +237,15 @@ def check_local_settings() -> Tuple[CheckResult, Dict[str, Any]]:
                  - GITHUB_REPO = 'python-pillow/Pillow'
             """
         ).strip()
-        return (CheckResult("config/local_settings.py", False, "Not found", fix), {})
+        return (_fail("config/local_settings.py", "Not found", fix), {})
 
     try:
         cfg = _load_py_settings(local)
     except Exception as e:
         # 配置文件语法错误时，exec 会失败
         return (
-            CheckResult(
+            _fail(
                 "config/local_settings.py",
-                False,
                 f"Failed to load: {e}",
                 "Fix python syntax errors in config/local_settings.py.",
             ),
@@ -245,7 +261,9 @@ def check_local_settings() -> Tuple[CheckResult, Dict[str, Any]]:
         if not ok
         else ""
     )
-    return (CheckResult("config/local_settings.py keys", ok, details, fix), cfg)
+    if ok:
+        return (_pass("config/local_settings.py keys", details), cfg)
+    return (_fail("config/local_settings.py keys", details, fix), cfg)
 
 
 def check_pillow_repo_path(cfg: Dict[str, Any]) -> CheckResult:
@@ -257,18 +275,16 @@ def check_pillow_repo_path(cfg: Dict[str, Any]) -> CheckResult:
     """
     p = cfg.get("PILLOW_REPO_PATH")
     if not p:
-        return CheckResult(
+        return _fail(
             "PILLOW_REPO_PATH",
-            False,
             "Not set",
             "Set PILLOW_REPO_PATH in config/local_settings.py to your local clone path of python-pillow/Pillow.",
         )
 
     repo_path = Path(str(p)).expanduser()
     if not repo_path.exists():
-        return CheckResult(
+        return _fail(
             "PILLOW_REPO_PATH",
-            False,
             f"Path not found: {repo_path}",
             "Ensure the path exists and points to your local Pillow repo clone.",
         )
@@ -277,7 +293,9 @@ def check_pillow_repo_path(cfg: Dict[str, Any]) -> CheckResult:
     ok = git_dir.exists()
     details = f"Found: {repo_path}" + (" (looks like a git repo)" if ok else " (missing .git)")
     fix = "PILLOW_REPO_PATH should point to a git clone of Pillow (directory containing .git)." if not ok else ""
-    return CheckResult("PILLOW_REPO_PATH validity", ok, details, fix)
+    if ok:
+        return _pass("PILLOW_REPO_PATH validity", details)
+    return _fail("PILLOW_REPO_PATH validity", details, fix)
 
 
 def check_outputs_dirs() -> List[CheckResult]:
@@ -301,6 +319,7 @@ def check_outputs_dirs() -> List[CheckResult]:
                 ok,
                 msg,
                 "Check permissions / disk space, or choose a writable workspace." if not ok else "",
+                "PASS" if ok else "FAIL",
             )
         )
     return results
@@ -314,7 +333,7 @@ def check_requirements_imports() -> List[CheckResult]:
     req_file = PROJECT_ROOT / "requirements.txt"
     pkgs = _parse_requirements(req_file)
     if not pkgs:
-        return [CheckResult("requirements.txt", False, "No requirements parsed", "Check requirements.txt format/existence.")]
+        return [_fail("requirements.txt", "No requirements parsed", "Check requirements.txt format/existence.")]
 
     alias = {
         # 常见“安装名 != import 名”的情况
@@ -340,6 +359,7 @@ def check_requirements_imports() -> List[CheckResult]:
                 ok,
                 msg,
                 "Install deps: python -m pip install -r requirements.txt" if not ok else "",
+                "PASS" if ok else "FAIL",
             )
         )
 
@@ -347,15 +367,14 @@ def check_requirements_imports() -> List[CheckResult]:
     if not all_ok:
         results.insert(
             0,
-            CheckResult(
+            _fail(
                 "Dependencies overall",
-                False,
                 "Missing imports: " + ", ".join(missing),
                 "Run: python -m pip install -r requirements.txt",
             ),
         )
     else:
-        results.insert(0, CheckResult("Dependencies overall", True, f"{len(pkgs)} packages import OK"))
+        results.insert(0, _pass("Dependencies overall", f"{len(pkgs)} packages import OK"))
 
     return results
 
@@ -367,7 +386,9 @@ def check_git_available() -> CheckResult:
     code, out = _run_cmd(["git", "--version"], cwd=PROJECT_ROOT)
     ok = code == 0
     fix = "Install Git and ensure 'git' is on PATH." if not ok else ""
-    return CheckResult("Git availability", ok, out or "git --version failed", fix)
+    if ok:
+        return _pass("Git availability", out or "git OK")
+    return _fail("Git availability", out or "git --version failed", fix)
 
 
 def check_network_and_github(cfg: Dict[str, Any], timeout: int = 8) -> List[CheckResult]:
@@ -377,37 +398,40 @@ def check_network_and_github(cfg: Dict[str, Any], timeout: int = 8) -> List[Chec
     2) GitHub API rate limit 是否可用（并提示 token 是否生效）
     3) GITHUB_REPO 格式是否正确（owner/repo）
     """
-    import urllib.request
-
     results: List[CheckResult] = []
+
+    # Use requests so that proxy/CA settings (HTTP_PROXY/HTTPS_PROXY/CA_BUNDLE) take effect.
+    try:
+        import requests
+    except Exception as e:
+        return [_warn("Network checks", f"requests not available, skipping network checks: {e}")]
+
+    http_proxy = cfg.get('HTTP_PROXY') or os.getenv('HTTP_PROXY') or ''
+    https_proxy = cfg.get('HTTPS_PROXY') or os.getenv('HTTPS_PROXY') or ''
+    ca_bundle = cfg.get('CA_BUNDLE') or os.getenv('REQUESTS_CA_BUNDLE') or ''
+
+    s = requests.Session()
+    if http_proxy or https_proxy:
+        s.proxies.update({k: v for k, v in {'http': http_proxy, 'https': https_proxy}.items() if v})
+    if ca_bundle:
+        s.verify = ca_bundle
 
     # 1) 基础 HTTPS 连通性
     try:
-        req = urllib.request.Request(
-            "https://api.github.com/rate_limit",
-            headers={"User-Agent": "self_check"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            ok = resp.status == 200
-            # 只为确认能读，内容不在此处展开
-            _ = resp.read()
-        results.append(
-            CheckResult(
-                "HTTPS to api.github.com",
-                ok,
-                f"status={resp.status}",
-                "" if ok else "Check proxy/CA settings.",
-            )
-        )
+        r = s.get('https://api.github.com/rate_limit', timeout=timeout, headers={'User-Agent': 'self_check'})
+        ok = (r.status_code == 200)
+        if ok:
+            results.append(_pass('HTTPS to api.github.com', f'status={r.status_code}'))
+        else:
+            results.append(_fail('HTTPS to api.github.com', f'status={r.status_code}', 'Check proxy/CA settings.'))
+            return results
     except Exception as e:
-        # 如果连 api.github.com 都访问不了，后续 GitHub 检查没意义
         results.append(
-            CheckResult(
-                "HTTPS to api.github.com",
-                False,
-                f"Failed: {e}",
-                "Network blocked or proxy/CA not configured. "
-                "(See README: HTTP_PROXY/HTTPS_PROXY/REQUESTS_CA_BUNDLE and tools/check_https.py.)",
+            _fail(
+                'HTTPS to api.github.com',
+                f'Failed: {e}',
+                'Network blocked or proxy/CA not configured. '
+                '(See README: HTTP_PROXY/HTTPS_PROXY/REQUESTS_CA_BUNDLE and tools/check_https.py.)',
             )
         )
         return results
@@ -419,9 +443,8 @@ def check_network_and_github(cfg: Dict[str, Any], timeout: int = 8) -> List[Chec
         headers["Authorization"] = f"token {token}"
 
     try:
-        req = urllib.request.Request("https://api.github.com/rate_limit", headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        r = s.get('https://api.github.com/rate_limit', timeout=timeout, headers=headers)
+        data = r.json() if r.headers.get('content-type', '').startswith('application/json') else {}
 
         core = data.get("resources", {}).get("core", {})
         remaining = core.get("remaining")
@@ -431,22 +454,21 @@ def check_network_and_github(cfg: Dict[str, Any], timeout: int = 8) -> List[Chec
         ok = isinstance(remaining, int) and remaining >= 1
         details = f"rate_limit core remaining={remaining}/{limit}, reset_epoch={reset}, auth={'yes' if token else 'no'}"
         fix = "Set GITHUB_TOKEN in config/local_settings.py to increase API quota." if not token else ""
-        results.append(CheckResult("GitHub API rate limit", ok, details, fix))
+        if ok:
+            results.append(_pass('GitHub API rate limit', details))
+        else:
+            results.append(_warn('GitHub API rate limit', details, fix))
     except Exception as e:
-        results.append(CheckResult("GitHub API rate limit", False, f"Failed: {e}", "Check token validity or network."))
+        results.append(_warn('GitHub API rate limit', f'Failed: {e}', 'Check token validity or network.'))
 
     # 3) 校验 GITHUB_REPO 格式
     repo = cfg.get("GITHUB_REPO")
     if repo:
         ok = bool(re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", str(repo)))
-        results.append(
-            CheckResult(
-                "GITHUB_REPO format",
-                ok,
-                f"GITHUB_REPO={repo}",
-                "Set GITHUB_REPO like 'python-pillow/Pillow'." if not ok else "",
-            )
-        )
+        if ok:
+            results.append(_pass('GITHUB_REPO format', f'GITHUB_REPO={repo}'))
+        else:
+            results.append(_fail('GITHUB_REPO format', f'GITHUB_REPO={repo}', "Set GITHUB_REPO like 'python-pillow/Pillow'."))
 
     return results
 
@@ -458,9 +480,8 @@ def check_tools_check_https() -> CheckResult:
     """
     script = PROJECT_ROOT / "tools" / "check_https.py"
     if not script.exists():
-        return CheckResult(
+        return _warn(
             "tools/check_https.py",
-            False,
             "Not found",
             "If you want network self-check, add/restore tools/check_https.py.",
         )
@@ -468,12 +489,160 @@ def check_tools_check_https() -> CheckResult:
     code, out = _run_cmd([sys.executable, str(script)], cwd=PROJECT_ROOT, timeout=40)
     ok = code == 0
     # 输出过长会影响阅读，这里截断最后 800 字符
-    return CheckResult(
+    if ok:
+        return _pass("Run tools/check_https.py", out[-800:] if out else "OK")
+    return _fail(
         "Run tools/check_https.py",
-        ok,
         out[-800:] if out else f"exit_code={code}",
-        "" if ok else "See output above; fix proxy/CA/network issues.",
+        "See output above; fix proxy/CA/network issues.",
     )
+
+
+def _load_json_file(path: Path) -> Tuple[bool, Any, str]:
+    try:
+        data = json.loads(path.read_text(encoding='utf-8', errors='replace'))
+        return True, data, ''
+    except Exception as e:
+        return False, None, str(e)
+
+
+def check_processed_data_sanity() -> List[CheckResult]:
+    """Validate current pipeline inputs under data/processed.
+
+    - commits_all is required for main.py
+    - bugs/cves are optional (warn if missing/empty)
+    """
+    results: List[CheckResult] = []
+    processed = PROJECT_ROOT / 'data' / 'processed'
+
+    commits_path = processed / 'pillow_commits_all.json'
+    if not commits_path.exists():
+        results.append(
+            _fail(
+                'Processed commits JSON',
+                f'Missing: {_safe_rel(commits_path)}',
+                'Run: python tools\\run_crawl_commits.py',
+            )
+        )
+        return results
+
+    ok, data, err = _load_json_file(commits_path)
+    if not ok:
+        results.append(_fail('Processed commits JSON', f'Invalid JSON: {err}', 'Re-generate commits JSON.'))
+        return results
+    if not isinstance(data, list) or not data:
+        results.append(_fail('Processed commits JSON', 'Empty or not a list', 'Re-generate commits JSON.'))
+        return results
+
+    # Basic schema checks (sample to avoid heavy cost)
+    sample = data[:200] if len(data) > 200 else data
+    missing_hash = sum(1 for c in sample if not isinstance(c, dict) or not c.get('hash'))
+    missing_date = sum(1 for c in sample if not isinstance(c, dict) or not c.get('date'))
+    missing_subject = sum(1 for c in sample if not isinstance(c, dict) or c.get('subject') in (None, ''))
+    if missing_hash or missing_date:
+        results.append(
+            _fail(
+                'Commits schema',
+                f'sample_size={len(sample)} missing_hash={missing_hash} missing_date={missing_date} missing_subject={missing_subject}',
+                'Ensure git crawler outputs hash/date/subject fields correctly.',
+            )
+        )
+    else:
+        results.append(_pass('Processed commits JSON', f'commits={len(data)} (sample checked)'))
+
+    # Numstat sanity: detect the classic "all zeros" bug/regression.
+    numstat_fields = ['insertions', 'deletions', 'files_changed']
+    nonzero = 0
+    for c in sample:
+        if not isinstance(c, dict):
+            continue
+        s = 0
+        for f in numstat_fields:
+            v = c.get(f)
+            if isinstance(v, int):
+                s += v
+            elif isinstance(v, str) and v.isdigit():
+                s += int(v)
+        if s > 0:
+            nonzero += 1
+    if nonzero == 0:
+        results.append(
+            _warn(
+                'Change size sanity',
+                f'sample_size={len(sample)} nonzero_numstat=0',
+                'All numstat fields are zero in sample. If this is unexpected, check git log --numstat parsing; also merges often have empty numstat (use --no-merges or --first-parent).',
+            )
+        )
+    else:
+        results.append(_pass('Change size sanity', f'sample_size={len(sample)} nonzero_numstat={nonzero}'))
+
+    # Optional bugs
+    bugs_path = processed / 'pillow_bug_issues.json'
+    if not bugs_path.exists():
+        results.append(_warn('Processed bug issues JSON', f'Missing: {_safe_rel(bugs_path)}', 'If you need bug metrics, run: python tools\\run_collect_bugs.py --since 2020-01-01'))
+    else:
+        ok, bugs, err = _load_json_file(bugs_path)
+        if (not ok) or (not isinstance(bugs, list)):
+            results.append(_warn('Processed bug issues JSON', f'Invalid JSON/list: {err}', 'Re-generate bug issues JSON.'))
+        elif not bugs:
+            results.append(_warn('Processed bug issues JSON', 'File exists but empty', 'Re-run bug collection with correct repo/token/time range.'))
+        else:
+            results.append(_pass('Processed bug issues JSON', f'issues={len(bugs)}'))
+
+    # Optional CVEs
+    cves_path = processed / 'pillow_cves_with_commits.json'
+    if not cves_path.exists():
+        results.append(_warn('Processed CVE JSON', f'Missing: {_safe_rel(cves_path)}', 'If you need CVE metrics, run: python tools\\run_collect.py ; python tools\\run_link_commits.py'))
+    else:
+        ok, cves, err = _load_json_file(cves_path)
+        if (not ok) or (not isinstance(cves, list)):
+            results.append(_warn('Processed CVE JSON', f'Invalid JSON/list: {err}', 'Re-generate CVE JSON.'))
+        elif not cves:
+            results.append(_warn('Processed CVE JSON', 'File exists but empty', 'Re-run CVE collection/linking.'))
+        else:
+            # quick schema check for current analyzer expectations
+            sample_cves = cves[:50] if len(cves) > 50 else cves
+            missing_id = sum(1 for x in sample_cves if not isinstance(x, dict) or not x.get('id'))
+            missing_published = sum(1 for x in sample_cves if not isinstance(x, dict) or not x.get('published'))
+            if missing_id:
+                results.append(_warn('CVE schema', f'sample_size={len(sample_cves)} missing_id={missing_id}', 'Ensure CVE collector outputs id field.'))
+            else:
+                results.append(_pass('Processed CVE JSON', f'cves={len(cves)} (sample checked)'))
+            if missing_published:
+                results.append(_warn('CVE timeline fields', f'sample_size={len(sample_cves)} missing_published={missing_published}', 'Published date missing may affect monthly CVE charts.'))
+
+    return results
+
+
+def check_output_artifacts() -> List[CheckResult]:
+    """Non-blocking checks for expected outputs."""
+    results: List[CheckResult] = []
+    charts_dir = PROJECT_ROOT / 'outputs' / 'charts'
+    reports_dir = PROJECT_ROOT / 'outputs' / 'reports'
+    report = reports_dir / 'pillow_report.md'
+
+    if charts_dir.exists():
+        pngs = list(charts_dir.glob('*.png'))
+        if not pngs:
+            results.append(_warn('Charts outputs', f'No PNG found under {_safe_rel(charts_dir)}', 'Run: python main.py'))
+        else:
+            results.append(_pass('Charts outputs', f'png_count={len(pngs)}'))
+    else:
+        results.append(_warn('Charts outputs', f'Missing dir: {_safe_rel(charts_dir)}', 'Run: python main.py'))
+
+    if report.exists():
+        try:
+            size = report.stat().st_size
+            if size <= 50:
+                results.append(_warn('Report output', f'{_safe_rel(report)} too small ({size} bytes)', 'Re-run: python main.py ; check console errors.'))
+            else:
+                results.append(_pass('Report output', f'{_safe_rel(report)} ({size} bytes)'))
+        except Exception as e:
+            results.append(_warn('Report output', f'Cannot stat report: {e}', 'Check filesystem permissions.'))
+    else:
+        results.append(_warn('Report output', f'Missing: {_safe_rel(report)}', 'Run: python main.py'))
+
+    return results
 
 
 # -----------------------------
@@ -502,8 +671,14 @@ def run_all(strict: bool, no_network: bool, run_https_tool: bool) -> int:
     # 4) 输出目录可写
     results.extend(check_outputs_dirs())
 
+    # 4b) 当前数据口径自检（data/processed）
+    results.extend(check_processed_data_sanity())
+
     # 5) requirements 依赖是否安装
     results.extend(check_requirements_imports())
+
+    # 5b) 输出产物检查（不阻断）
+    results.extend(check_output_artifacts())
 
     # 6) 网络相关检查（可关闭）
     if (not no_network) and cfg:
@@ -524,7 +699,7 @@ def run_all(strict: bool, no_network: bool, run_https_tool: bool) -> int:
     print("-" * 72)
 
     for r in results:
-        status = "PASS" if r.ok else "FAIL"
+        status = r.severity if r.severity else ("PASS" if r.ok else "FAIL")
         print(f"[{status}] {r.name}")
         if r.details:
             print("  -", r.details)
@@ -542,7 +717,15 @@ def run_all(strict: bool, no_network: bool, run_https_tool: bool) -> int:
         return 1
 
     # 非 strict：核心失败项（严重影响运行）才返回 1
-    core_fail_names = {"Python version", "Project layout", "Dependencies overall", "config/local_settings.py"}
+    core_fail_names = {
+        "Python version",
+        "Project layout",
+        "Dependencies overall",
+        "config/local_settings.py",
+        "config/local_settings.py keys",
+        "Processed commits JSON",
+        "Commits schema",
+    }
     core_failed = any((not r.ok) and (r.name in core_fail_names) for r in results)
     return 1 if core_failed else 0
 

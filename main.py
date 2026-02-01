@@ -43,7 +43,29 @@ def main() -> int:
     parser.add_argument('--bugs-json', default=default_bugs, help='Optional; if missing, bug section will be skipped')
     parser.add_argument('--charts-dir', default=os.path.join(base, 'outputs', 'charts'))
     parser.add_argument('--report', default=os.path.join(base, 'outputs', 'reports', 'pillow_report.md'))
+
+    # Preflight self-check (enabled by default)
+    parser.add_argument('--skip-self-check', action='store_true', help='Skip self_check preflight')
+    parser.add_argument('--self-check-strict', action='store_true', help='Self-check: treat any failure as non-zero exit')
+    parser.add_argument('--self-check-network', action='store_true', help='Self-check: enable network/GitHub checks (default: off)')
+    parser.add_argument('--self-check-run-check-https', action='store_true', help='Self-check: also run tools/check_https.py')
     args = parser.parse_args()
+
+    if not args.skip_self_check:
+        try:
+            from self_check.self_check import run_all as run_self_check
+        except Exception as e:
+            print('[main][ERROR] failed to import self_check module:', e)
+            return 2
+
+        sc_code = run_self_check(
+            strict=bool(args.self_check_strict),
+            no_network=(not bool(args.self_check_network)),
+            run_https_tool=bool(args.self_check_run_check_https),
+        )
+        if sc_code != 0:
+            print('[main][ERROR] self check reported problems; aborting analysis.')
+            return 2
 
     commits = _load_json(args.commits_json)
     cves = _load_json(args.cves_json)

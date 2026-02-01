@@ -21,6 +21,7 @@
 - 抓取 bug issues（bug 关闭规律）：`python tools\run_collect_bugs.py --since 2020-01-01`
 
 - 生成图表与报告：`python main.py`
+  - 说明：默认会先运行一次自检（不含网络检查）；如需跳过：`python main.py --skip-self-check`
 
 输出：
 
@@ -43,6 +44,7 @@
   - 可选：只看主线（更适合演化节奏）：`python tools\run_crawl_commits.py --first-parent`
 - 抓 bug issues：`python tools\run_collect_bugs.py --since 2020-01-01`
 - 生成报告：`python main.py`
+  - 跳过自检：`python main.py --skip-self-check`
 
 可选（CVE 方向）：
 
